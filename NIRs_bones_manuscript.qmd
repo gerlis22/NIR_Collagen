@@ -1,0 +1,335 @@
+---
+title: "Refining Near-Infrared Spectroscopy for Collagen Quantification: Developing a Predictive Model for Archaeological Bone"
+subtitle: "R code running random forest models"
+
+author: "Christina Ryder Gerardo Celis, Thibaut Devièse, Sahra Talamo, Katerina Douka, Matthew Collins, Angela Perri, Heather Thakar, William Pestle, Matt Sponheimer"
+date: last-modified
+format: 
+  html:
+    theme: spacelab
+    toc: TRUE
+    toc-location: left
+crossref:
+  fig-title: Figure
+  title-delim: .
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(data.table)
+library(ggplot2)
+library(ggpmisc)
+library(tidyverse)
+library(pls)
+library(caret)
+library(readxl)
+library(doParallel)
+
+# read spectra dataset
+dat <- read_excel('Manuscript Transformed Data_Revised.xlsx', na = c("NaN", ""))
+
+# Create data.table
+dat <- data.table(dat)
+
+l.old <- names(dat[,-c(1:5)])
+l.new <- paste("X", names(dat[,-c(1:5)]), sep = "")
+
+setnames(dat, c("Sample ID", "Collagen Yield (%)", l.old), c("unique.id", "reference", l.new))
+
+
+# List of wavelengths desired (2030-2060 nm)
+l.780.2500 <- names(dat[,-c(1:435)])
+head(l.780.2500)
+tail(l.780.2500)
+
+# List of wavelengths desired (2030-2060 nm)
+l.2030.2060 <- names(dat[,-c(1:1685, 1717:2156)])
+head(l.2030.2060)
+tail(l.2030.2060)
+
+# Create list of variables needed
+l.a <- c("unique.id", "Calibration/Validation", "reference", l.780.2500)
+l.b <- c("unique.id", "Calibration/Validation", "reference", l.2030.2060)
+
+# Create data sets with desired variables
+dat.a <- dat[, ..l.a]
+dat.b <- dat[, ..l.b]
+
+# set seed for reoducibility
+set.seed(1978)
+
+```
+
+# 780 - 2500 nm
+## Calibration and Validation data
+
+```{r, eval=TRUE, echo=FALSE, fig.width=7, fig.height=7, warning=FALSE, message=FALSE}
+
+# Calibration data
+dat.cal.b <- dat.a[`Calibration/Validation` == "Calibration"]
+
+# Validation data
+dat.val.b <- dat.a[`Calibration/Validation` == "Validation"]
+
+# Parallel processing setup
+detectCores()
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+
+# Set random forest train validation
+cv.kfold <- caret::trainControl(
+        method = "LOOCV",
+        number = 10, #k.folds
+        savePredictions = FALSE,
+        allowParallel = TRUE
+      )
+
+# Run random forest model
+model.cal.rf <- caret::train(reference ~ .,
+        data = dat.cal.b[,-c(1:2)],
+        method = "rf",
+        tuneLength = 23, #tune.length
+        trControl = cv.kfold,
+        n.tree = 500,
+        metric = "RMSE" #best.model.metric
+      )
+
+# Stop multiple parallel processing
+stopCluster(cl)
+
+# Check model statistics
+model.cal.rf
+plot(model.cal.rf)
+
+# Obtain variable. importance
+imp <- varImp(model.cal.rf, scale = FALSE)
+
+# Plot top 20 most important variable
+plot(imp, top = 20)
+
+# obtain best model statistics
+model.cal.rf$finalModel
+
+# create data set with measured and predicted for calibration data set
+dat.cal.rf.check <- data.table(Filename = dat.cal.b$unique.id, reference = dat.cal.b$reference, pred_rf = predict(model.cal.rf, dat.cal.b))
+dat.cal.rf.check$data <- "Calibration"
+
+# create data set with measured and predicted for validation data set
+dat.val.rf.check <- data.table(Filename = dat.val.b$unique.id, reference = dat.val.b$reference, pred_rf = predict(model.cal.rf, dat.val.b))
+dat.val.rf.check$data <- "Validation"
+
+# Combined calibration and validation data sets
+check.tran.rf.publish <- rbindlist(list(dat.cal.rf.check, dat.val.rf.check)) 
+
+# Plot measured vs. predictions
+fig.11 <- ggplot(check.tran.rf.publish, aes(reference, pred_rf, label = Filename, colour = data)) + geom_abline(slope = 1) + geom_point(alpha = 0.5, size = 3) + stat_poly_line(se = F) + stat_poly_eq(use_label(c("eq", "R2"))) + scale_color_manual(values= c("black", "purple")) + theme_bw() + labs(y = "Predicted collagen (%)", x = "Measured collagen (%)", colour = "Data") + theme_bw(base_size = 14)
+fig.11
+
+```
+
+## All data and independent validation data
+
+```{r, eval=TRUE, echo=FALSE, fig.width=7, fig.height=7, warning=FALSE, message=FALSE}
+
+# Create data set with combined calibration and validation sets
+dat.cal.b <- dat.a[`Calibration/Validation` %in% c("Calibration", "Validation")]
+
+
+# Parallel processing setup
+detectCores()
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+
+# Set random forest train validation
+cv.kfold <- caret::trainControl(
+        method = "LOOCV",
+        number = 10, #k.folds
+        savePredictions = FALSE,
+        allowParallel = TRUE
+      )
+
+# Run random forest model
+model.rf <- caret::train(reference ~ .,
+        data = dat.cal.b[, -c(1:2)],
+        method = "rf",
+        #tuneGrid=data.frame(mtry=15),
+        tuneLength = 23, #tune.length
+        trControl = cv.kfold,
+        n.tree = 500,
+        metric = "RMSE" #best.model.metric
+      )
+
+# Stop multiple parallel processing
+stopCluster(cl)
+
+# Check model statistics
+model.rf
+plot(model.rf)
+
+# Obtain variable. importance
+imp <- varImp(model.rf, scale = FALSE)
+plot(imp, top = 20)
+
+# obtain best model statistics
+model.rf$finalModel
+
+# create data set with measured and predicted for calibration data set
+dat.rf.check <- data.table(Filename = dat.cal.b$unique.id, reference = dat.cal.b$reference, pred_rf = predict(model.rf, dat.cal.b))
+dat.rf.check$data <- "Calibration"
+
+# Plot measured vs. predicted from calibration data set.
+ggplot(dat.rf.check, aes(reference, pred_rf)) + geom_abline(slope = 1) + geom_point(alpha = 0.5, size = 3) + stat_poly_line(se = F) + stat_poly_eq(use_label(c("eq", "R2"))) + theme_bw() + labs(title = "Random Forest model", y = "Predicted Collagen (%)", x = "Measured Collagen (%)") + theme_bw(base_size = 14)
+
+# create data set with measured and predicted for independent validation data set
+dat.val.zaf.b <-  dat.a[`Calibration/Validation` == "Independent Validation"]
+dat.val.zaf.rf.check <- data.table(Filename = dat.val.zaf.b$unique.id, reference = dat.val.zaf.b$reference, pred_rf = predict(model.rf, dat.val.zaf.b))
+dat.val.zaf.rf.check$data <- "Zaf"
+
+# Combined calibration and independent validation data sets
+check.tran.rf <- rbindlist(list(dat.rf.check, dat.val.zaf.rf.check)) 
+
+# Plot measured vs. predictions
+p.tran.rf <- ggplot(check.tran.rf, aes(reference, pred_rf, label = Filename, colour = data)) + geom_abline(slope = 1) + geom_point(alpha = 0.5, size = 3) + stat_poly_line(se = F) + stat_poly_eq(use_label(c("eq", "R2"))) + scale_color_manual(values= c("black", "orange")) + theme_bw() + labs(title = "Random Forest model", subtitle = "Transformed data - Christina", y = "Predicted collagen", x = "Measured Collagen") + theme_bw(base_size = 14)
+p.tran.rf
+
+```
+
+
+
+
+# 2030-2060 nm
+## Calibration and Validation data
+
+```{r, eval=TRUE, echo=FALSE, fig.width=7, fig.height=7, warning=FALSE, message=FALSE}
+
+# Calibration data
+dat.cal.b <- dat.b[`Calibration/Validation` == "Calibration"]
+
+# Validation data
+dat.val.b <- dat.b[`Calibration/Validation` == "Validation"]
+
+# Parallel processing setup
+detectCores()
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+
+# Set random forest train validation
+cv.kfold <- caret::trainControl(
+        method = "LOOCV",
+        number = 10, #k.folds
+        savePredictions = FALSE,
+        allowParallel = TRUE
+      )
+
+# Run random forest model
+model.cal.rf <- caret::train(reference ~ .,
+        data = dat.cal.b[,-c(1:2)],
+        method = "rf",
+        tuneLength = 23, #tune.length
+        trControl = cv.kfold,
+        n.tree = 500,
+        metric = "RMSE" #best.model.metric
+      )
+
+# Stop multiple parallel processing
+stopCluster(cl)
+
+# Check model statistics
+model.cal.rf
+plot(model.cal.rf)
+
+# Obtain variable. importance
+imp <- varImp(model.cal.rf, scale = FALSE)
+
+# Plot top 20 most important variable
+plot(imp, top = 20)
+
+# obtain best model statistics
+model.cal.rf$finalModel
+
+# create data set with measured and predicted for calibration data set
+dat.cal.rf.check <- data.table(Filename = dat.cal.b$unique.id, reference = dat.cal.b$reference, pred_rf = predict(model.cal.rf, dat.cal.b))
+dat.cal.rf.check$data <- "Calibration"
+
+# create data set with measured and predicted for validation data set
+dat.val.rf.check <- data.table(Filename = dat.val.b$unique.id, reference = dat.val.b$reference, pred_rf = predict(model.cal.rf, dat.val.b))
+dat.val.rf.check$data <- "Validation"
+
+# Combined calibration and validation data sets
+check.tran.rf.publish <- rbindlist(list(dat.cal.rf.check, dat.val.rf.check)) 
+
+# Plot measured vs. predictions
+fig.11 <- ggplot(check.tran.rf.publish, aes(reference, pred_rf, label = Filename, colour = data)) + geom_abline(slope = 1) + geom_point(alpha = 0.5, size = 3) + stat_poly_line(se = F) + stat_poly_eq(use_label(c("eq", "R2"))) + scale_color_manual(values= c("black", "purple")) + theme_bw() + labs(y = "Predicted collagen (%)", x = "Measured collagen (%)", colour = "Data") + theme_bw(base_size = 14)
+fig.11
+
+```
+
+## All data and independent validation data
+
+```{r, eval=TRUE, echo=FALSE, fig.width=7, fig.height=7, warning=FALSE, message=FALSE}
+
+# Create data set with combined calibration and validation sets
+dat.cal.b <- dat.b[`Calibration/Validation` %in% c("Calibration", "Validation")]
+
+
+# Parallel processing setup
+detectCores()
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+
+# Set random forest train validation
+cv.kfold <- caret::trainControl(
+        method = "LOOCV",
+        number = 10, #k.folds
+        savePredictions = FALSE,
+        allowParallel = TRUE
+      )
+
+# Run random forest model
+model.rf <- caret::train(reference ~ .,
+        data = dat.cal.b[, -c(1:2)],
+        method = "rf",
+        #tuneGrid=data.frame(mtry=15),
+        tuneLength = 23, #tune.length
+        trControl = cv.kfold,
+        n.tree = 500,
+        metric = "RMSE" #best.model.metric
+      )
+
+# Stop multiple parallel processing
+stopCluster(cl)
+
+# Check model statistics
+model.rf
+plot(model.rf)
+
+# Obtain variable. importance
+imp <- varImp(model.rf, scale = FALSE)
+plot(imp, top = 20)
+
+# obtain best model statistics
+model.rf$finalModel
+
+# create data set with measured and predicted for calibration data set
+dat.rf.check <- data.table(Filename = dat.cal.b$unique.id, reference = dat.cal.b$reference, pred_rf = predict(model.rf, dat.cal.b))
+dat.rf.check$data <- "Calibration"
+
+# Plot measured vs. predicted from calibration data set.
+ggplot(dat.rf.check, aes(reference, pred_rf)) + geom_abline(slope = 1) + geom_point(alpha = 0.5, size = 3) + stat_poly_line(se = F) + stat_poly_eq(use_label(c("eq", "R2"))) + theme_bw() + labs(title = "Random Forest model", y = "Predicted Collagen (%)", x = "Measured Collagen (%)") + theme_bw(base_size = 14)
+
+# create data set with measured and predicted for independent validation data set
+dat.val.zaf.b <-  dat.b[`Calibration/Validation` == "Independent Validation"]
+dat.val.zaf.rf.check <- data.table(Filename = dat.val.zaf.b$unique.id, reference = dat.val.zaf.b$reference, pred_rf = predict(model.rf, dat.val.zaf.b))
+dat.val.zaf.rf.check$data <- "Zaf"
+
+# Combined calibration and independent validation data sets
+check.tran.rf <- rbindlist(list(dat.rf.check, dat.val.zaf.rf.check)) 
+
+# Plot measured vs. predictions
+p.tran.rf <- ggplot(check.tran.rf, aes(reference, pred_rf, label = Filename, colour = data)) + geom_abline(slope = 1) + geom_point(alpha = 0.5, size = 3) + stat_poly_line(se = F) + stat_poly_eq(use_label(c("eq", "R2"))) + scale_color_manual(values= c("black", "orange")) + theme_bw() + labs(title = "Random Forest model", subtitle = "Transformed data - Christina", y = "Predicted collagen", x = "Measured Collagen") + theme_bw(base_size = 14)
+p.tran.rf
+
+```
+
+
